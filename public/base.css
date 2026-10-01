@@ -1,0 +1,60 @@
+/* Neumorphic look shared by the phone app and the website. Follows the phone/computer light or dark setting. */
+:root {
+  --bg: #E4E8EE;
+  --shade: #C2C8D0;
+  --light: #FFFFFF;
+  --ink: #2D3340;
+  --muted: #5E6673;
+  --accent: #4A63E7;
+  --on-accent: #FFFFFF;
+  --dash: #A7AEB9;
+  --danger: #C2412D;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #2A2E35;
+    --shade: #1D2025;
+    --light: #363B44;
+    --ink: #E6E9EF;
+    --muted: #A3AAB6;
+    --accent: #8196FF;
+    --on-accent: #1D2025;
+    --dash: #525966;
+    --danger: #FF8A73;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body { font-family: 'Archivo', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+a { color: inherit; }
+img { display: block; }
+
+.raised { background: var(--bg); box-shadow: 9px 9px 18px var(--shade), -9px -9px 18px var(--light); }
+.raised-sm { background: var(--bg); box-shadow: 4px 4px 8px var(--shade), -4px -4px 8px var(--light); }
+.inset { background: var(--bg); box-shadow: inset 6px 6px 12px var(--shade), inset -6px -6px 12px var(--light); }
+.inset-sm { background: var(--bg); box-shadow: inset 3px 3px 6px var(--shade), inset -3px -3px 6px var(--light); }
+
+.chip {
+  height: 40px; padding: 0 16px; border: none; border-radius: 20px;
+  background: var(--bg); box-shadow: 4px 4px 8px var(--shade), -4px -4px 8px var(--light);
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+}
+.chip[aria-pressed="true"] {
+  box-shadow: inset 3px 3px 6px var(--shade), inset -3px -3px 6px var(--light);
+  color: var(--accent); font-weight: 800;
+}
+.round-add {
+  width: 40px; height: 40px; padding: 0; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  border: 2px dashed var(--dash); border-radius: 20px; background: transparent; color: var(--muted);
+}
+.icon-btn {
+  width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: none; border-radius: 24px;
+  background: var(--bg); box-shadow: 5px 5px 10px var(--shade), -5px -5px 10px var(--light); color: var(--ink); text-decoration: none;
+}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.muted { color: var(--muted); }
+[hidden] { display: none !important; }

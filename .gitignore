@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+# Node
+node_modules/
+npm-debug.log*
+# Local data (lives in ~/schedule-data on the laptop, never in git)
+data/
+*.db
+*.db-wal
+*.db-shm
+.env

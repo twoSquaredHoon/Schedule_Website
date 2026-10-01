@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schedule</title>
+<link rel="icon" href="/icon.png" type="image/png">
+<link rel="apple-touch-icon" href="/app/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="/base.css">
+<link rel="stylesheet" href="/web.css">
+</head>
+<body>
+<header class="top">
+  <nav class="tabs" aria-label="Pages">
+    <a href="#timeline" data-tab="timeline">Timeline</a>
+    <a href="#stats" data-tab="stats">Stats</a>
+    <a href="#memes" data-tab="memes">Memes</a>
+  </nav>
+  <div class="now-pill raised-sm" id="nowPill" hidden>
+    <span class="dot"></span><span id="nowPillTag"></span><span class="muted tnum" id="nowPillTime"></span>
+  </div>
+  <div class="seg inset-sm" id="rangeSeg" hidden>
+    <button type="button" data-range="1">Day</button>
+    <button type="button" data-range="7">Week</button>
+    <button type="button" data-range="30">Month</button>
+  </div>
+</header>
+
+<!-- TIMELINE -->
+<div class="page" id="timeline" hidden>
+  <aside class="side">
+    <div class="daynav">
+      <button type="button" class="icon-btn" id="prevDay" aria-label="Previous day"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <div class="daylabel" id="dayLabel"></div>
+      <button type="button" class="icon-btn" id="nextDay" aria-label="Next day"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
+    </div>
+    <section class="card raised">
+      <div class="label">Your day</div>
+      <div class="strip inset-sm"><div class="strip-inner" id="dayStrip"></div></div>
+      <div class="strip-axis"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div>
+      <div class="legend" id="dayLegend"></div>
+    </section>
+    <section>
+      <div class="label">Places</div>
+      <div class="chips" id="placeFilter"></div>
+    </section>
+  </aside>
+  <main class="feed">
+    <h1 id="dayTitle"></h1>
+    <div id="feed"></div>
+    <p class="empty muted" id="feedEmpty" hidden>Nothing logged this day.</p>
+  </main>
+</div>
+
+<!-- STATS -->
+<div class="page wide" id="stats" hidden>
+  <div class="title-row">
+    <div><div class="muted small" id="statsRange"></div><h1 id="statsTotal"></h1></div>
+    <div class="muted" id="statsSub"></div>
+  </div>
+  <div class="cols">
+    <section class="card raised col-7">
+      <h2>Where your time went</h2>
+      <div class="bars" id="tagBars"></div>
+    </section>
+    <section class="card raised col-5">
+      <h2>Places</h2>
+      <div class="bars" id="placeBars"></div>
+    </section>
+    <section class="card raised col-12" id="dailyCard">
+      <h2>Every day</h2>
+      <div class="columns" id="dailyCols"></div>
+    </section>
+  </div>
+</div>
+
+<!-- MEMES -->
+<div class="page wide" id="memes" hidden>
+  <div class="title-row">
+    <div><div class="muted small" id="memesRange"></div><h1>Memes</h1></div>
+    <div class="muted" id="memesSub"></div>
+  </div>
+  <section class="card raised">
+    <h2>Most used</h2>
+    <div class="top5" id="topMemes"></div>
+    <p class="empty muted" id="topEmpty" hidden>No memes picked in this period yet.</p>
+  </section>
+  <div class="cols">
+    <section class="card raised col-5">
+      <h2>By tag</h2>
+      <div class="bytag" id="byTag"></div>
+    </section>
+    <section class="card raised col-7">
+      <div class="h2row"><h2>Library</h2><span class="muted small" id="libCount"></span></div>
+      <div class="library" id="library"></div>
+    </section>
+  </div>
+</div>
+
+<script src="/shared.js"></script>
+<script src="/web.js"></script>
+</body>
+</html>
