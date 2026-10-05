@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 CREATE INDEX IF NOT EXISTS entries_started ON entries(started_at);
 `);
+// Deleting a place or activity hides it (archived_at) so past entries keep their name.
+for (const table of ['places', 'tags']) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes('archived_at')) db.exec(`ALTER TABLE ${table} ADD COLUMN archived_at TEXT`);
+}
 
 const q = (sql) => db.prepare(sql);
 const now = () => new Date().toISOString();
@@ -100,7 +105,12 @@ function getOrCreateTagByName(name) {
   name = cleanName(name);
   if (!name) return null;
   const found = q('SELECT * FROM tags WHERE name = ?').get(name);
-  if (found) return found;
+  if (found) {
+    // Adding a deleted activity again brings it back.
+    if (found.archived_at) q('UPDATE tags SET archived_at = NULL WHERE id = ?').run(found.id);
+    fs.mkdirSync(path.join(MEMES, found.folder), { recursive: true });
+    return found;
+  }
   const folder = folderFor(name);
   fs.mkdirSync(path.join(MEMES, folder), { recursive: true });
   const r = q('INSERT INTO tags (name, folder) VALUES (?, ?)').run(name, folder);
@@ -182,20 +192,37 @@ const withUrl = (row) => row && { ...row, url: mediaUrl(row.file) };
 app.get('/api/state', wrap((_req, res) => {
   const current = withUrl(q(CURRENT_SQL).get() || null);
   const places = q(`SELECT p.id, p.name, MAX(e.started_at) AS last FROM places p LEFT JOIN entries e ON e.place_id = p.id
+                    WHERE p.archived_at IS NULL
                     GROUP BY p.id ORDER BY last IS NULL, last DESC, p.name`).all();
   const tags = q(`SELECT t.id, t.name, MAX(e.started_at) AS last FROM tags t LEFT JOIN entries e ON e.tag_id = t.id
+                  WHERE t.archived_at IS NULL
                   GROUP BY t.id ORDER BY last IS NULL, last DESC, t.name`).all();
   res.json({ current, places, tags, now: now() });
 }));
+
+const conflict = (msg) => Object.assign(new Error(msg), { status: 409 });
+const notFound = () => Object.assign(new Error('Not found'), { status: 404 });
 
 app.post('/api/places', wrap((req, res) => {
   const name = cleanName(req.body.name);
   if (!name) throw bad('Name required');
   q('INSERT OR IGNORE INTO places (name) VALUES (?)').run(name);
+  q('UPDATE places SET archived_at = NULL WHERE name = ?').run(name);
   res.json(q('SELECT id, name FROM places WHERE name = ?').get(name));
 }));
+// Rename. Past entries show the new name too.
+app.patch('/api/places/:id', wrap((req, res) => {
+  const id = Number(req.params.id);
+  const name = cleanName(req.body.name);
+  if (!name) throw bad('Name required');
+  if (!q('SELECT id FROM places WHERE id = ?').get(id)) throw notFound();
+  if (q('SELECT id FROM places WHERE name = ? AND id != ?').get(name, id)) throw conflict('That place already exists');
+  q('UPDATE places SET name = ? WHERE id = ?').run(name, id);
+  res.json({ id, name });
+}));
+// Delete = hide from the app. History and stats keep the name.
 app.delete('/api/places/:id', wrap((req, res) => {
-  q('DELETE FROM places WHERE id = ?').run(Number(req.params.id));
+  q('UPDATE places SET archived_at = ? WHERE id = ?').run(now(), Number(req.params.id));
   res.json({ ok: true });
 }));
 
@@ -204,9 +231,39 @@ app.post('/api/tags', wrap((req, res) => {
   if (!tag) throw bad('Name required');
   res.json({ id: tag.id, name: tag.name });
 }));
+// Rename an activity and its memes folder, and fix the saved meme paths.
+app.patch('/api/tags/:id', wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const name = cleanName(req.body.name);
+  if (!name) throw bad('Name required');
+  const tag = q('SELECT * FROM tags WHERE id = ?').get(id);
+  if (!tag) throw notFound();
+  if (q('SELECT id FROM tags WHERE name = ? AND id != ?').get(name, id)) throw conflict('That activity already exists');
+  if (scanning) await scanning;
+  const folder = folderFor(name);
+  if (folder !== tag.folder) {
+    const oldDir = path.join(MEMES, tag.folder);
+    const newDir = path.join(MEMES, folder);
+    const sameDir = fs.existsSync(newDir) && fs.existsSync(oldDir) && fs.realpathSync(newDir) === fs.realpathSync(oldDir);
+    if (fs.existsSync(newDir) && !sameDir) throw conflict('A memes folder with that name already exists');
+    if (fs.existsSync(oldDir)) fs.renameSync(oldDir, newDir); else fs.mkdirSync(newDir, { recursive: true });
+    const prefix = tag.folder + '/';
+    db.exec('BEGIN');
+    try {
+      for (const m of q('SELECT id, file FROM media WHERE substr(file, 1, ?) = ?').all(prefix.length, prefix)) {
+        q('UPDATE media SET file = ? WHERE id = ?').run(folder + '/' + m.file.slice(prefix.length), m.id);
+      }
+      q('UPDATE tags SET name = ?, folder = ? WHERE id = ?').run(name, folder, id);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+  } else {
+    q('UPDATE tags SET name = ? WHERE id = ?').run(name, id);
+  }
+  res.json({ id, name });
+}));
+// Delete = hide from the app. History, stats and its memes stay.
 app.delete('/api/tags/:id', wrap((req, res) => {
-  // The tag's memes folder is kept; its memes just become untagged.
-  q('DELETE FROM tags WHERE id = ?').run(Number(req.params.id));
+  q('UPDATE tags SET archived_at = ? WHERE id = ?').run(now(), Number(req.params.id));
   res.json({ ok: true });
 }));
 

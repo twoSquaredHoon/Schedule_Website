@@ -12,6 +12,8 @@ Screen time for your life. You switch activities on your phone, and this server 
 
 Places and activities start empty. You add them in the phone app (round **+**), and they show up on the website straight away because both read the same database. Adding an activity also creates its folder in `memes/`.
 
+Renaming (pencil button in the app) changes the name everywhere, past entries included; renaming an activity also renames its `memes/` folder. Deleting only hides it from the app: past entries, stats and its memes keep it, and adding the same name again brings it back.
+
 ## Set up on the Linux Mint laptop
 
 1. Copy both folders to the laptop so they sit side by side, for example `~/Schedule_Website` and `~/Schedule_App`.
@@ -55,8 +57,8 @@ The server only listens on the laptop itself, and Tailscale is the only way in, 
 | Method | Path | Does |
 |---|---|---|
 | GET | `/api/state` | current activity, places, activities |
-| POST | `/api/places` `{name}` · DELETE `/api/places/:id` | add / remove a place |
-| POST | `/api/tags` `{name}` · DELETE `/api/tags/:id` | add / remove an activity |
+| POST | `/api/places` `{name}` · PATCH `/api/places/:id` `{name}` · DELETE `/api/places/:id` | add / rename / delete a place |
+| POST | `/api/tags` `{name}` · PATCH `/api/tags/:id` `{name}` · DELETE `/api/tags/:id` | add / rename / delete an activity (rename also renames its memes folder) |
 | POST | `/api/switch` `{tag_id, place_id}` | start a new activity now |
 | POST | `/api/entries/:id/media` `{media_id}` | attach a meme to a switch |
 | DELETE | `/api/entries/:id` | delete a switch |
