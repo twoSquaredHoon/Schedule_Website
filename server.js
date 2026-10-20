@@ -1,6 +1,7 @@
 // Schedule server: one SQLite database + a memes folder, shared by the phone app (/app) and the website (/).
 // Code lives in Schedule_Website (this folder) and Schedule_App (next to it). Data lives in ~/schedule-data.
 const express = require('express');
+const webpush = require('web-push');
 const multer = require('multer');
 const { DatabaseSync } = require('node:sqlite');
 const { execFile } = require('node:child_process');
@@ -56,6 +57,38 @@ for (const table of ['places', 'tags']) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
   if (!cols.includes('archived_at')) db.exec(`ALTER TABLE ${table} ADD COLUMN archived_at TEXT`);
 }
+// Places can have a pin on the map (lat/lng) and a radius in meters.
+{
+  const cols = db.prepare('PRAGMA table_info(places)').all().map((c) => c.name);
+  if (!cols.includes('lat')) db.exec('ALTER TABLE places ADD COLUMN lat REAL');
+  if (!cols.includes('lng')) db.exec('ALTER TABLE places ADD COLUMN lng REAL');
+  if (!cols.includes('radius')) db.exec('ALTER TABLE places ADD COLUMN radius REAL NOT NULL DEFAULT 120');
+}
+db.exec(`
+CREATE TABLE IF NOT EXISTS locations (
+  id INTEGER PRIMARY KEY,
+  at TEXT NOT NULL,
+  lat REAL NOT NULL,
+  lng REAL NOT NULL,
+  acc REAL
+);
+CREATE TABLE IF NOT EXISTS suggestions (
+  id INTEGER PRIMARY KEY,
+  at TEXT NOT NULL,
+  place_id INTEGER REFERENCES places(id) ON DELETE SET NULL,
+  tag_id INTEGER REFERENCES tags(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE TABLE IF NOT EXISTS push_subs (
+  id INTEGER PRIMARY KEY,
+  endpoint TEXT NOT NULL UNIQUE,
+  sub TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+`);
 
 const q = (sql) => db.prepare(sql);
 const now = () => new Date().toISOString();
@@ -191,7 +224,7 @@ const withUrl = (row) => row && { ...row, url: mediaUrl(row.file) };
 
 app.get('/api/state', wrap((_req, res) => {
   const current = withUrl(q(CURRENT_SQL).get() || null);
-  const places = q(`SELECT p.id, p.name, MAX(e.started_at) AS last FROM places p LEFT JOIN entries e ON e.place_id = p.id
+  const places = q(`SELECT p.id, p.name, p.lat, p.lng, MAX(e.started_at) AS last FROM places p LEFT JOIN entries e ON e.place_id = p.id
                     WHERE p.archived_at IS NULL
                     GROUP BY p.id ORDER BY last IS NULL, last DESC, p.name`).all();
   const tags = q(`SELECT t.id, t.name, MAX(e.started_at) AS last FROM tags t LEFT JOIN entries e ON e.tag_id = t.id
@@ -354,6 +387,193 @@ app.post('/api/media', upload.single('file'), wrap(async (req, res) => {
 }));
 
 app.post('/api/rescan', wrap(async (_req, res) => { await scanMemes(); res.json({ ok: true }); }));
+
+// =====================================================================
+// Location + notifications
+//  1. OwnTracks on the iPhone posts your location to /api/owntracks.
+//  2. If you are inside a pinned place's radius, that's "arriving".
+//  3. The server guesses the activity from what you usually log there
+//     at that time of day, saves a suggestion that starts at the
+//     arrival time, and sends a push notification.
+//  4. Confirming the suggestion in the app logs it from the arrival time.
+// =====================================================================
+const getMeta = (key) => { const r = q('SELECT value FROM meta WHERE key = ?').get(key); return r ? r.value : null; };
+const setMeta = (key, value) => q('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, String(value));
+
+// --- push notifications (keys are made once and saved in the data folder) ---
+const VAPID_FILE = path.join(DATA, 'vapid.json');
+if (!fs.existsSync(VAPID_FILE)) fs.writeFileSync(VAPID_FILE, JSON.stringify(webpush.generateVAPIDKeys()));
+const VAPID = JSON.parse(fs.readFileSync(VAPID_FILE, 'utf8'));
+webpush.setVapidDetails('mailto:schedule@example.com', VAPID.publicKey, VAPID.privateKey);
+
+async function sendPush(payload) {
+  for (const row of q('SELECT * FROM push_subs').all()) {
+    try {
+      await webpush.sendNotification(JSON.parse(row.sub), JSON.stringify(payload));
+    } catch (e) {
+      // 404/410 = the phone removed this subscription
+      if (e.statusCode === 404 || e.statusCode === 410) q('DELETE FROM push_subs WHERE id = ?').run(row.id);
+      else console.error('push failed', e.statusCode || e.message);
+    }
+  }
+}
+
+app.get('/api/push/key', (_req, res) => res.json({ key: VAPID.publicKey }));
+app.post('/api/push/subscribe', wrap((req, res) => {
+  const sub = req.body.subscription;
+  if (!sub || !sub.endpoint) throw bad('No subscription');
+  q('INSERT INTO push_subs (endpoint, sub) VALUES (?, ?) ON CONFLICT(endpoint) DO UPDATE SET sub = excluded.sub').run(sub.endpoint, JSON.stringify(sub));
+  res.json({ ok: true });
+}));
+app.post('/api/push/test', wrap(async (_req, res) => {
+  await sendPush({ title: 'Schedule', body: 'Notifications work', url: '/app/' });
+  res.json({ ok: true, phones: q('SELECT COUNT(*) AS n FROM push_subs').get().n });
+}));
+
+// --- place pins ---
+app.put('/api/places/:id/location', wrap((req, res) => {
+  const id = Number(req.params.id);
+  if (!q('SELECT id FROM places WHERE id = ?').get(id)) throw notFound();
+  if (req.body.clear) {
+    q('UPDATE places SET lat = NULL, lng = NULL WHERE id = ?').run(id);
+  } else {
+    const lat = Number(req.body.lat), lng = Number(req.body.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw bad('Need lat and lng');
+    q('UPDATE places SET lat = ?, lng = ? WHERE id = ?').run(lat, lng, id);
+    if (req.body.radius) q('UPDATE places SET radius = ? WHERE id = ?').run(Number(req.body.radius), id);
+  }
+  res.json(q('SELECT id, name, lat, lng, radius FROM places WHERE id = ?').get(id));
+}));
+
+// Distance in meters between two lat/lng points.
+function meters(lat1, lng1, lat2, lng2) {
+  const R = 6371000, rad = Math.PI / 180;
+  const a = Math.sin(((lat2 - lat1) * rad) / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lng2 - lng1) * rad) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// The pinned place you're inside, or null. stretch > 1 makes the circle bigger
+// (used so a little GPS wobble at the edge doesn't count as leaving).
+function placeAt(lat, lng, acc, stretch = 1) {
+  let best = null;
+  for (const p of q('SELECT * FROM places WHERE lat IS NOT NULL AND archived_at IS NULL').all()) {
+    const d = meters(lat, lng, p.lat, p.lng);
+    if (d <= p.radius * stretch + Math.min(acc || 0, 100) && (!best || d < best.d)) best = { ...p, d };
+  }
+  return best;
+}
+
+// Guess the activity from what you've logged at this place before:
+// first look only at entries started within 2 hours of this time of day;
+// if there are none, use everything you've logged at this place.
+function guessTag(placeId, at) {
+  const hour = at.getHours();
+  const near = new Map(), all = new Map();
+  const rows = q(`SELECT e.tag_id, e.started_at FROM entries e JOIN tags t ON t.id = e.tag_id
+                  WHERE e.place_id = ? AND t.archived_at IS NULL`).all(placeId);
+  for (const r of rows) {
+    const h = new Date(r.started_at).getHours();
+    const diff = Math.min(Math.abs(h - hour), 24 - Math.abs(h - hour));
+    all.set(r.tag_id, (all.get(r.tag_id) || 0) + 1);
+    if (diff <= 2) near.set(r.tag_id, (near.get(r.tag_id) || 0) + 1);
+  }
+  const counts = near.size ? near : all;
+  let bestId = null, best = 0;
+  for (const [id, n] of counts) if (n > best) { bestId = id; best = n; }
+  return bestId;
+}
+
+async function handleLocation(lat, lng, acc, at) {
+  q('INSERT INTO locations (at, lat, lng, acc) VALUES (?, ?, ?, ?)').run(at.toISOString(), lat, lng, acc ?? null);
+
+  const prevId = getMeta('geo_place') ? Number(getMeta('geo_place')) : null;
+  // Still at the previous place? (use a 1.5x bigger circle to ignore wobble)
+  if (prevId) {
+    const prev = placeAt(lat, lng, acc, 1.5);
+    if (prev && prev.id === prevId) return { place: prev.name, changed: false };
+  }
+  const place = placeAt(lat, lng, acc);
+  const newId = place ? place.id : null;
+  if (newId === prevId) return { place: place ? place.name : null, changed: false };
+  setMeta('geo_place', newId ?? '');
+  if (!place) return { place: null, changed: true }; // left a place: nothing to ask
+
+  // Arrived somewhere new.
+  const cur = q(CURRENT_SQL).get();
+  if (cur && cur.place_id === place.id) return { place: place.name, changed: true }; // already logged here
+  q("UPDATE suggestions SET status = 'expired' WHERE status = 'pending'").run();
+  const tagId = guessTag(place.id, at);
+  q('INSERT INTO suggestions (at, place_id, tag_id) VALUES (?, ?, ?)').run(at.toISOString(), place.id, tagId);
+  const tag = tagId ? q('SELECT name FROM tags WHERE id = ?').get(tagId) : null;
+  await sendPush({
+    title: place.name.toUpperCase(),
+    body: tag ? `${tag.name.toUpperCase()}?` : 'WHAT ARE YOU DOING?',
+    url: '/app/#suggest',
+    tag: 'arrive',
+  });
+  return { place: place.name, changed: true, suggested: tag ? tag.name : null };
+}
+
+// OwnTracks (iPhone app) sends {_type: "location", lat, lon, acc, tst}.
+// It expects a JSON array back.
+app.post('/api/owntracks', wrap(async (req, res) => {
+  const b = req.body || {};
+  if (b._type === 'location' && Number.isFinite(b.lat) && Number.isFinite(b.lon)) {
+    await handleLocation(b.lat, b.lon, b.acc, b.tst ? new Date(b.tst * 1000) : new Date());
+  }
+  res.json([]);
+}));
+// Plain version (for testing or iOS Shortcuts): {lat, lng, acc?}
+app.post('/api/location', wrap(async (req, res) => {
+  const lat = Number(req.body.lat), lng = Number(req.body.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw bad('Need lat and lng');
+  res.json(await handleLocation(lat, lng, req.body.acc, new Date()));
+}));
+
+// --- suggestions ---
+const SUGGESTION_SQL = `
+SELECT s.id, s.at, s.place_id, p.name AS place, s.tag_id, t.name AS tag
+FROM suggestions s
+LEFT JOIN places p ON p.id = s.place_id
+LEFT JOIN tags t ON t.id = s.tag_id`;
+app.get('/api/suggestion', wrap((_req, res) => {
+  const since = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
+  res.json(q(`${SUGGESTION_SQL} WHERE s.status = 'pending' AND s.at > ? ORDER BY s.at DESC LIMIT 1`).get(since) || null);
+}));
+// Accept: log the activity starting at the arrival time.
+app.post('/api/suggestion/:id/accept', wrap((req, res) => {
+  const s = q('SELECT * FROM suggestions WHERE id = ?').get(Number(req.params.id));
+  if (!s || s.status !== 'pending') throw bad('That suggestion is gone');
+  const tagId = Number(req.body.tag_id);
+  const placeId = req.body.place_id == null ? null : Number(req.body.place_id);
+  if (!q('SELECT id FROM tags WHERE id = ?').get(tagId)) throw bad('Pick what you are doing');
+  // If you already switched by hand after arriving, start now instead.
+  const cur = q(CURRENT_SQL).get();
+  const start = cur && cur.started_at > s.at ? now() : s.at;
+  q('INSERT INTO entries (started_at, place_id, tag_id) VALUES (?, ?, ?)').run(start, placeId, tagId);
+  q("UPDATE suggestions SET status = 'accepted' WHERE id = ?").run(s.id);
+  res.json(withUrl(q(CURRENT_SQL).get()));
+}));
+app.post('/api/suggestion/:id/dismiss', wrap((req, res) => {
+  q("UPDATE suggestions SET status = 'dismissed' WHERE id = ?").run(Number(req.params.id));
+  res.json({ ok: true });
+}));
+
+// --- reminder when one activity runs a long time ---
+const NUDGE_HOURS = Number(process.env.NUDGE_HOURS || 3);
+async function nudge() {
+  const cur = q(CURRENT_SQL).get();
+  if (!cur || !cur.tag || /sleep/i.test(cur.tag)) return;
+  const hour = new Date().getHours();
+  if (hour < 8 || hour >= 23) return; // no reminders at night
+  const hrs = (Date.now() - new Date(cur.started_at).getTime()) / 3600000;
+  if (hrs < NUDGE_HOURS || getMeta('nudged_entry') === String(cur.id)) return;
+  setMeta('nudged_entry', cur.id);
+  await sendPush({ title: `STILL ${cur.tag.toUpperCase()}?`, body: `${Math.floor(hrs)}H SO FAR`, url: '/app/#switch', tag: 'nudge' });
+}
+setInterval(() => nudge().catch((e) => console.error('nudge failed', e)), 10 * 60 * 1000);
+setTimeout(() => nudge().catch((e) => console.error('nudge failed', e)), 30 * 1000);
 
 app.get('/app', (_req, res) => res.redirect('/app/'));
 

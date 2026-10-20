@@ -1,14 +1,15 @@
 {
   "name": "schedule-website",
   "version": "1.0.0",
-  "description": "Schedule \u2014 screen time for your life. Server + website.",
+  "description": "Schedule — screen time for your life. Server + website.",
   "main": "server.js",
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js"
   },
   "dependencies": {
     "express": "^4.22.3",
-    "multer": "^2.4.0"
+    "multer": "^2.4.0",
+    "web-push": "^3.6.7"
   },
   "private": true,
   "engines": {
